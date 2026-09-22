@@ -102,20 +102,25 @@ class BrandExtractor:
         """Find and download the logo."""
         logo_urls = []
 
-        # Check for logo in various common locations - more flexible selectors
+        # Only use specific logo selectors - avoid pulling random images
         logo_selectors = [
+            # Explicit logo matches
             ('img[src*="logo"]', 'src'),
-            ('img[alt*="logo" i]', 'src'),  # Case insensitive
+            ('img[alt*="logo" i]', 'src'),  # Case insensitive alt text
             ('img.logo', 'src'),
+            ('img#logo', 'src'),
             ('img[id*="logo"]', 'src'),
             ('a.logo img', 'src'),
+            ('a#logo img', 'src'),
+            # Logo in common containers
             ('[class*="logo"] img', 'src'),
             ('[id*="logo"] img', 'src'),
-            ('header img', 'src'),  # Logo often in header
-            ('nav img', 'src'),  # Logo often in nav
-            ('.brand img', 'src'),
-            ('.navbar img', 'src'),
-            ('a:first-child img', 'src'),  # First image in first link (often logo)
+            # Brand/branding related
+            ('img[class*="brand"]', 'src'),
+            ('img.brand', 'src'),
+            # SVG logos
+            ('svg#logo', 'data'),
+            ('svg.logo', 'data'),
             ('svg[id*="logo"]', 'data'),
             ('svg[class*="logo"]', 'data'),
         ]
@@ -134,9 +139,9 @@ class BrandExtractor:
 
                     if url and url not in logo_urls:  # Avoid duplicates
                         logo_urls.append(urljoin(self.url, url))
-                        if len(logo_urls) >= 5:  # Limit to 5 URLs to try
+                        if len(logo_urls) >= 3:  # Limit to 3 URLs to try
                             break
-            except Exception as e:
+            except Exception:
                 pass  # Silently fail on selector errors
 
         # Try first logo found
