@@ -102,14 +102,20 @@ class BrandExtractor:
         """Find and download the logo."""
         logo_urls = []
 
-        # Check for logo in various common locations
+        # Check for logo in various common locations - more flexible selectors
         logo_selectors = [
             ('img[src*="logo"]', 'src'),
+            ('img[alt*="logo" i]', 'src'),  # Case insensitive
             ('img.logo', 'src'),
-            ('img[alt*="logo"]', 'src'),
+            ('img[id*="logo"]', 'src'),
             ('a.logo img', 'src'),
             ('[class*="logo"] img', 'src'),
             ('[id*="logo"] img', 'src'),
+            ('header img', 'src'),  # Logo often in header
+            ('nav img', 'src'),  # Logo often in nav
+            ('.brand img', 'src'),
+            ('.navbar img', 'src'),
+            ('a:first-child img', 'src'),  # First image in first link (often logo)
             ('svg[id*="logo"]', 'data'),
             ('svg[class*="logo"]', 'data'),
         ]
@@ -120,13 +126,18 @@ class BrandExtractor:
                 for elem in elements:
                     url = None
                     if attr == 'data' and elem.name == 'svg':
-                        url = f"data:image/svg+xml,{str(elem)}"
+                        svg_str = str(elem)
+                        if svg_str and len(svg_str) > 50:  # Only if not empty
+                            url = f"data:image/svg+xml,{svg_str}"
                     else:
                         url = elem.get(attr)
-                    if url:
+
+                    if url and url not in logo_urls:  # Avoid duplicates
                         logo_urls.append(urljoin(self.url, url))
+                        if len(logo_urls) >= 5:  # Limit to 5 URLs to try
+                            break
             except Exception as e:
-                self.result['errors'].append(f"Error searching for logo with selector {selector}: {str(e)}")
+                pass  # Silently fail on selector errors
 
         # Try first logo found
         if logo_urls:
@@ -135,8 +146,9 @@ class BrandExtractor:
                     return True
 
             # If download failed for all URLs, return the first logo URL as fallback
-            self.result['logo_url'] = logo_urls[0]
-            return True
+            if logo_urls:
+                self.result['logo_url'] = logo_urls[0]
+                return True
 
         return False
 
@@ -164,22 +176,34 @@ class BrandExtractor:
             response = requests.get(logo_url, timeout=10)
             response.raise_for_status()
 
-            # Try to open as image (handles PNG, JPG, WebP, GIF, etc.)
-            img = Image.open(BytesIO(response.content))
+            # Check if response has content
+            if not response.content:
+                return False
 
-            # Convert to PNG if not already
-            if img.format != 'PNG':
-                img = img.convert('RGBA')
+            try:
+                # Try to open as image (handles PNG, JPG, WebP, GIF, etc.)
+                img = Image.open(BytesIO(response.content))
 
-            # Save logo
-            logo_path = os.path.join(self.output_dir, f"{self.domain}_logo.png")
-            img.save(logo_path, 'PNG')
+                # Convert to PNG
+                if img.format and img.format != 'PNG':
+                    img = img.convert('RGBA')
+                elif not img.format:
+                    # If format unknown, try to convert anyway
+                    img = img.convert('RGBA')
 
-            self.result['logo'] = logo_path
-            self.result['logo_url'] = logo_url
-            return True
+                # Save logo
+                logo_path = os.path.join(self.output_dir, f"{self.domain}_logo.png")
+                img.save(logo_path, 'PNG')
+
+                self.result['logo'] = logo_path
+                self.result['logo_url'] = logo_url
+                return True
+            except Exception:
+                # If image processing fails, still return the URL
+                self.result['logo_url'] = logo_url
+                return False
+
         except Exception as e:
-            self.result['errors'].append(f"Failed to download logo from {logo_url}: {str(e)}")
             return False
 
     def _find_background_image(self) -> bool:
