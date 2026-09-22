@@ -1,17 +1,11 @@
 import requests
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
 from urllib.parse import urljoin, urlparse
 import os
 import re
 from pathlib import Path
 from PIL import Image
 from io import BytesIO
-import colorsys
 from typing import Optional, Dict, List, Tuple
 
 
@@ -30,7 +24,6 @@ class BrandExtractor:
         self.output_dir = output_dir
         self.domain = urlparse(url).netloc.replace('www.', '')
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        self.driver = None
         self.page_html = None
         self.soup = None
         self.result = {
@@ -47,34 +40,15 @@ class BrandExtractor:
             'errors': []
         }
 
-    def _init_driver(self):
-        """Initialize Selenium WebDriver."""
-        if self.driver is None:
-            chrome_options = Options()
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-gpu")
-            try:
-                self.driver = webdriver.Chrome(options=chrome_options)
-            except Exception as e:
-                self.result['errors'].append(f"Failed to initialize Chrome driver: {str(e)}")
-                raise
-
-    def _close_driver(self):
-        """Close Selenium WebDriver."""
-        if self.driver:
-            self.driver.quit()
-            self.driver = None
-
     def _fetch_page(self) -> bool:
-        """Fetch the page using Selenium."""
+        """Fetch the page using requests."""
         try:
-            self._init_driver()
-            self.driver.get(self.url)
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_all_elements_located((By.TAG_NAME, "body"))
-            )
-            self.page_html = self.driver.page_source
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(self.url, timeout=10, headers=headers)
+            response.raise_for_status()
+            self.page_html = response.text
             self.soup = BeautifulSoup(self.page_html, 'html.parser')
             return True
         except Exception as e:
@@ -123,19 +97,6 @@ class BrandExtractor:
         }
 
         return named_colors.get(color_str)
-
-    def _convert_svg_to_png(self, svg_data: bytes, output_path: str) -> bool:
-        """Convert SVG to PNG using cairosvg."""
-        try:
-            import cairosvg
-            cairosvg.svg2png(bytestring=svg_data, write_to=output_path)
-            return True
-        except ImportError:
-            self.result['errors'].append("cairosvg not installed. Install with: pip install cairosvg")
-            return False
-        except Exception as e:
-            self.result['errors'].append(f"Failed to convert SVG: {str(e)}")
-            return False
 
     def _find_logo(self) -> bool:
         """Find and download the logo."""
@@ -187,25 +148,21 @@ class BrandExtractor:
                 svg_str = logo_url.replace('data:image/svg+xml,', '')
                 svg_bytes = svg_str.encode('utf-8')
                 logo_path = os.path.join(self.output_dir, f"{self.domain}_logo.png")
-                if self._convert_svg_to_png(svg_bytes, logo_path):
+
+                # Try to convert SVG to PNG, but don't fail if we can't
+                try:
+                    import cairosvg
+                    cairosvg.svg2png(bytestring=svg_bytes, write_to=logo_path)
                     self.result['logo'] = logo_path
                     self.result['logo_url'] = "inline SVG"
                     return True
-                return False
+                except Exception:
+                    # If SVG conversion fails, just return the URL
+                    self.result['logo_url'] = logo_url
+                    return False
 
             response = requests.get(logo_url, timeout=10)
             response.raise_for_status()
-
-            content_type = response.headers.get('content-type', '').lower()
-
-            # Handle SVG content type
-            if 'svg' in content_type:
-                logo_path = os.path.join(self.output_dir, f"{self.domain}_logo.png")
-                if self._convert_svg_to_png(response.content, logo_path):
-                    self.result['logo'] = logo_path
-                    self.result['logo_url'] = logo_url
-                    return True
-                return False
 
             # Try to open as image (handles PNG, JPG, WebP, GIF, etc.)
             img = Image.open(BytesIO(response.content))
@@ -249,18 +206,6 @@ class BrandExtractor:
             if bg_match:
                 bg_url = bg_match.group(1)
                 bg_image_urls.append(urljoin(self.url, bg_url))
-
-        # Also check via computed styles
-        if self.driver:
-            try:
-                body = self.driver.find_element(By.TAG_NAME, "body")
-                bg_image = body.value_of_css_property("background-image")
-                if bg_image and bg_image != 'none':
-                    bg_url_match = re.search(r'url\([\'"]?([^\)\'\"]+)[\'"]?\)', bg_image)
-                    if bg_url_match:
-                        bg_image_urls.append(urljoin(self.url, bg_url_match.group(1)))
-            except Exception as e:
-                self.result['errors'].append(f"Error extracting background image via computed styles: {str(e)}")
 
         # Download first background image found
         if bg_image_urls:
@@ -363,76 +308,6 @@ class BrandExtractor:
         except Exception as e:
             self.result['errors'].append(f"Error extracting colors: {str(e)}")
 
-    def _extract_from_css(self):
-        """Extract computed styles using Selenium."""
-        try:
-            if not self.driver:
-                return
-
-            # Get button color from computed style
-            button_selectors = [
-                ('button', "button[0]"),
-                ('[class*="btn"]', "button with class containing 'btn'"),
-                ('[class*="cta"]', "element with class containing 'cta'"),
-            ]
-
-            for selector, desc in button_selectors:
-                try:
-                    buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if buttons and not self.result['button_color']:
-                        button = buttons[0]
-                        bg_color = button.value_of_css_property("background-color")
-                        if bg_color and bg_color not in ['rgba(0, 0, 0, 0)', 'transparent']:
-                            color = self._parse_color(bg_color)
-                            if color:
-                                self.result['button_color'] = color
-                                break
-                except:
-                    pass
-
-            # Get body background color
-            try:
-                body = self.driver.find_element(By.TAG_NAME, "body")
-                bg_color = body.value_of_css_property("background-color")
-                if bg_color and bg_color not in ['rgba(0, 0, 0, 0)', 'transparent']:
-                    color = self._parse_color(bg_color)
-                    if color and color not in self.result['background_colors']:
-                        self.result['background_colors'].append(color)
-            except Exception as e:
-                pass
-
-            # Extract computed text colors
-            text_selectors = ['p', 'h1', 'h2', 'span', 'a']
-            font_colors = []
-
-            for selector in text_selectors:
-                try:
-                    elements = self.driver.find_elements(By.TAG_NAME, selector)
-                    for elem in elements[:5]:
-                        try:
-                            color = elem.value_of_css_property("color")
-                            if color:
-                                hex_color = self._parse_color(color)
-                                if hex_color and hex_color not in font_colors:
-                                    font_colors.append(hex_color)
-                        except:
-                            pass
-
-                    if len(font_colors) >= 2:
-                        break
-                except:
-                    pass
-
-            # Update font colors if we found any
-            if font_colors:
-                if not self.result['primary_font_color']:
-                    self.result['primary_font_color'] = font_colors[0]
-                if not self.result['secondary_font_color'] and len(font_colors) > 1:
-                    self.result['secondary_font_color'] = font_colors[1]
-
-        except Exception as e:
-            self.result['errors'].append(f"Error extracting computed styles: {str(e)}")
-
     def extract(self) -> Dict:
         """
         Main method to extract all brand information.
@@ -453,17 +328,15 @@ class BrandExtractor:
             # Extract colors from HTML/CSS
             self._extract_colors()
 
-            # Extract computed styles
-            self._extract_from_css()
-
             # Clean up background colors if empty
             if not self.result['background_colors']:
                 self.result['background_colors'] = ['#ffffff']  # Default to white
 
             return self.result
 
-        finally:
-            self._close_driver()
+        except Exception as e:
+            self.result['errors'].append(f"Unexpected error: {str(e)}")
+            return self.result
 
 
 def extract_brand(url: str, output_dir: str = "./brand_assets") -> Dict:
