@@ -237,6 +237,33 @@ class BrandExtractor:
             self.result['errors'].append(f"Failed to download background image from {bg_url}: {str(e)}")
             return False
 
+    def _extract_colors_from_css(self):
+        """Extract colors from CSS stylesheets."""
+        font_colors = set()
+        button_colors = set()
+
+        # Extract from style tags
+        style_tags = self.soup.find_all('style')
+        css_text = ''
+        for style_tag in style_tags:
+            css_text += style_tag.string or ''
+
+        # Find color definitions in CSS
+        color_matches = re.findall(r'color\s*:\s*([^;]+)', css_text)
+        for match in color_matches[:10]:  # Get first 10 color definitions
+            color = self._parse_color(match.strip())
+            if color and color not in ['#ffffff', '#000000']:  # Skip pure white/black
+                font_colors.add(color)
+
+        # Find button background colors in CSS
+        button_matches = re.findall(r'(?:button|\.btn|\.cta)\s*\{[^}]*background(?:-color)?:([^;]+)', css_text)
+        for match in button_matches:
+            color = self._parse_color(match.strip())
+            if color:
+                button_colors.add(color)
+
+        return list(font_colors)[:2], list(button_colors)
+
     def _extract_colors(self):
         """Extract background, text, and button colors."""
         try:
@@ -287,7 +314,7 @@ class BrandExtractor:
                 if self.result['button_color']:
                     break
 
-            # Extract text colors - find primary and secondary
+            # Extract text colors - find primary and secondary from inline styles
             font_colors = []
             text_elements = self.soup.find_all(['p', 'a', 'h1', 'h2', 'h3', 'span', 'li'])
 
@@ -299,11 +326,19 @@ class BrandExtractor:
                     if color and color not in font_colors:
                         font_colors.append(color)
 
+            # Also extract from CSS stylesheets
+            css_font_colors, css_button_colors = self._extract_colors_from_css()
+            font_colors.extend(css_font_colors)
+
             # Set primary and secondary font colors
             if font_colors:
                 self.result['primary_font_color'] = font_colors[0]
                 if len(font_colors) > 1:
                     self.result['secondary_font_color'] = font_colors[1]
+
+            # Set button color from CSS if not found in inline styles
+            if not self.result['button_color'] and css_button_colors:
+                self.result['button_color'] = css_button_colors[0]
 
         except Exception as e:
             self.result['errors'].append(f"Error extracting colors: {str(e)}")
