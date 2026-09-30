@@ -7,6 +7,8 @@ from pathlib import Path
 from PIL import Image
 from io import BytesIO
 from typing import Optional, Dict, List, Tuple
+from selenium import webdriver
+from webdriver_manager.chrome import ChromeDriverManager
 
 
 class BrandExtractor:
