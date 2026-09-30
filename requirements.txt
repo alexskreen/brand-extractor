@@ -1,4 +1,6 @@
 requests
 beautifulsoup4
+selenium
 pillow
 streamlit
+webdriver-manager
